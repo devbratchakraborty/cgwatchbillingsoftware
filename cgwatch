@@ -1,0 +1,2020 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+import sqlite3
+from datetime import datetime, date, timedelta
+import pandas as pd
+from reportlab.lib.pagesizes import A4, letter
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+from reportlab.lib.units import inch
+from reportlab.pdfgen import canvas
+from reportlab.lib.utils import ImageReader
+import os
+import sys
+from PIL import Image, ImageTk
+import json
+import hashlib
+import time
+
+class LoginWindow:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Chhattisgarh Watch - Login")
+        self.root.geometry("400x300")
+        self.root.configure(bg='#2c3e50')
+        self.root.resizable(False, False)
+        
+        # Center window
+        self.root.eval('tk::PlaceWindow . center')
+        
+        self.setup_database()
+        self.create_widgets()
+    
+    def setup_database(self):
+        self.conn = sqlite3.connect('cgwatch_billing.db')
+        self.cursor = self.conn.cursor()
+        
+        # Create users table
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE,
+                password TEXT,
+                full_name TEXT,
+                user_type TEXT,
+                created_date TEXT
+            )
+        ''')
+        
+        # Create default admin user
+        self.cursor.execute("SELECT COUNT(*) FROM users")
+        if self.cursor.fetchone()[0] == 0:
+            default_password = hashlib.md5("admin123".encode()).hexdigest()
+            self.cursor.execute('''
+                INSERT INTO users (username, password, full_name, user_type, created_date)
+                VALUES (?, ?, ?, ?, ?)
+            ''', ("admin", default_password, "Administrator", "Admin", date.today().strftime("%Y-%m-%d")))
+            self.conn.commit()
+    
+    def create_widgets(self):
+        # Header
+        header_frame = ttk.Frame(self.root)
+        header_frame.pack(fill='x', padx=20, pady=20)
+        
+        title_label = ttk.Label(header_frame, text="छत्तीसगढ़ वॉच", 
+                               font=('Arial', 20, 'bold'), foreground='#f39c12')
+        title_label.pack()
+        
+        sub_label = ttk.Label(header_frame, text="Billing Software", 
+                             font=('Arial', 12), foreground='#bdc3c7')
+        sub_label.pack()
+        
+        # Login Form
+        form_frame = ttk.Frame(self.root)
+        form_frame.pack(fill='both', expand=True, padx=50, pady=20)
+        
+        ttk.Label(form_frame, text="Username:", font=('Arial', 10)).grid(row=0, column=0, sticky='w', pady=10)
+        self.username_entry = ttk.Entry(form_frame, width=25, font=('Arial', 10))
+        self.username_entry.grid(row=0, column=1, pady=10, padx=10)
+        self.username_entry.insert(0, "admin")
+        
+        ttk.Label(form_frame, text="Password:", font=('Arial', 10)).grid(row=1, column=0, sticky='w', pady=10)
+        self.password_entry = ttk.Entry(form_frame, width=25, show="*", font=('Arial', 10))
+        self.password_entry.grid(row=1, column=1, pady=10, padx=10)
+        self.password_entry.insert(0, "admin123")
+        
+        # Buttons
+        btn_frame = ttk.Frame(form_frame)
+        btn_frame.grid(row=2, column=0, columnspan=2, pady=20)
+        
+        ttk.Button(btn_frame, text="Login", command=self.login, width=15).pack(side='left', padx=5)
+        ttk.Button(btn_frame, text="Create User", command=self.create_user, width=15).pack(side='left', padx=5)
+        ttk.Button(btn_frame, text="Exit", command=self.root.quit, width=15).pack(side='left', padx=5)
+        
+        # Bind Enter key to login
+        self.root.bind('<Return>', lambda event: self.login())
+    
+    def login(self):
+        username = self.username_entry.get()
+        password = hashlib.md5(self.password_entry.get().encode()).hexdigest()
+        
+        self.cursor.execute("SELECT * FROM users WHERE username=? AND password=?", (username, password))
+        user = self.cursor.fetchone()
+        
+        if user:
+            self.root.destroy()
+            root = tk.Tk()
+            app = ChhattisgarhWatchBillingSystem(root, user)
+            root.mainloop()
+        else:
+            messagebox.showerror("Login Failed", "Invalid username or password")
+    
+    def create_user(self):
+        create_window = tk.Toplevel(self.root)
+        create_window.title("Create New User")
+        create_window.geometry("400x300")
+        create_window.configure(bg='#2c3e50')
+        create_window.resizable(False, False)
+        
+        ttk.Label(create_window, text="Create New User", font=('Arial', 16, 'bold')).pack(pady=20)
+        
+        form_frame = ttk.Frame(create_window)
+        form_frame.pack(fill='both', expand=True, padx=50, pady=20)
+        
+        ttk.Label(form_frame, text="Full Name:").grid(row=0, column=0, sticky='w', pady=5)
+        full_name_entry = ttk.Entry(form_frame, width=25)
+        full_name_entry.grid(row=0, column=1, pady=5, padx=5)
+        
+        ttk.Label(form_frame, text="Username:").grid(row=1, column=0, sticky='w', pady=5)
+        new_user_entry = ttk.Entry(form_frame, width=25)
+        new_user_entry.grid(row=1, column=1, pady=5, padx=5)
+        
+        ttk.Label(form_frame, text="Password:").grid(row=2, column=0, sticky='w', pady=5)
+        new_pass_entry = ttk.Entry(form_frame, width=25, show="*")
+        new_pass_entry.grid(row=2, column=1, pady=5, padx=5)
+        
+        ttk.Label(form_frame, text="User Type:").grid(row=3, column=0, sticky='w', pady=5)
+        user_type = ttk.Combobox(form_frame, values=["Admin", "Operator"], state="readonly", width=22)
+        user_type.set("Operator")
+        user_type.grid(row=3, column=1, pady=5, padx=5)
+        
+        def save_user():
+            if all([full_name_entry.get(), new_user_entry.get(), new_pass_entry.get()]):
+                try:
+                    password_hash = hashlib.md5(new_pass_entry.get().encode()).hexdigest()
+                    self.cursor.execute('''
+                        INSERT INTO users (username, password, full_name, user_type, created_date)
+                        VALUES (?, ?, ?, ?, ?)
+                    ''', (new_user_entry.get(), password_hash, full_name_entry.get(), 
+                          user_type.get(), date.today().strftime("%Y-%m-%d")))
+                    self.conn.commit()
+                    messagebox.showinfo("Success", "User created successfully!")
+                    create_window.destroy()
+                except sqlite3.IntegrityError:
+                    messagebox.showerror("Error", "Username already exists!")
+            else:
+                messagebox.showerror("Error", "Please fill all fields")
+        
+        ttk.Button(create_window, text="Save User", command=save_user).pack(pady=10)
+
+class ChhattisgarhWatchBillingSystem:
+    def __init__(self, root, user):
+        self.root = root
+        self.user = user
+        self.root.title("छत्तीसगढ़ वॉच - Complete Billing System")
+        self.root.geometry("1400x800")
+        self.root.configure(bg='#2c3e50')
+        
+        # Copyright
+        self.copyright_text = "© 2024 छत्तीसगढ़ वॉच. All rights reserved."
+        self.current_invoice_id = None
+        
+        # Database setup
+        self.setup_database()
+        
+        # Setup Chhattisgarh data
+        self.setup_chhattisgarh_data()
+        
+        # Setup advertisement rates
+        self.setup_ad_rates()
+        
+        # Bank Details (Hardcoded as per requirement)
+        self.bank_details = {
+            'bank_name': 'State Bank of India',
+            'account_name': 'CHHATTISGARH WATCH',
+            'account_number': '30563635637',
+            'ifsc_code': 'SBIN0006085',
+            'branch': 'Pandari Tarai Branch Raipur (C.G)'
+        }
+        
+        # Create GUI
+        self.create_gui()
+        
+        # Load initial data
+        self.load_invoices()
+        self.load_clients()
+        self.load_ledger()
+        self.update_dashboard()
+    
+    def setup_database(self):
+        """Initialize SQLite database with required tables"""
+        self.conn = sqlite3.connect('cgwatch_billing.db')
+        self.cursor = self.conn.cursor()
+        
+        # Create invoices table
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS invoices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoice_number TEXT UNIQUE,
+                agency_name TEXT,
+                place TEXT,
+                client_name TEXT,
+                client_gstin TEXT,
+                region TEXT,
+                district TEXT,
+                area TEXT,
+                invoice_date TEXT,
+                bill_no TEXT,
+                ro_no TEXT,
+                ro_date TEXT,
+                hsn_code TEXT,
+                pub_date TEXT,
+                insertion TEXT,
+                color_type TEXT,
+                page_no TEXT,
+                particulars TEXT,
+                ad_size TEXT,
+                total_size TEXT,
+                rate REAL,
+                amount REAL,
+                page_premium_front REAL DEFAULT 0,
+                page_premium_back REAL DEFAULT 0,
+                color_charge REAL DEFAULT 0,
+                deduction_amount REAL DEFAULT 0,
+                cgst_rate REAL DEFAULT 2.5,
+                sgst_rate REAL DEFAULT 2.5,
+                igst_rate REAL DEFAULT 0,
+                cgst_amount REAL DEFAULT 0,
+                sgst_amount REAL DEFAULT 0,
+                igst_amount REAL DEFAULT 0,
+                grand_total REAL,
+                paid_amount REAL DEFAULT 0,
+                balance_amount REAL,
+                status TEXT DEFAULT 'Unpaid',
+                created_by TEXT,
+                created_date TEXT
+            )
+        ''')
+        
+        # Create ledger table
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT,
+                voucher_type TEXT,
+                voucher_no TEXT,
+                party_name TEXT,
+                description TEXT,
+                debit REAL,
+                credit REAL,
+                balance REAL
+            )
+        ''')
+        
+        # Create clients table
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS clients (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                address TEXT,
+                gstin TEXT,
+                phone TEXT,
+                email TEXT,
+                region TEXT,
+                district TEXT,
+                area TEXT,
+                created_date TEXT
+            )
+        ''')
+        
+        self.conn.commit()
+    
+    def setup_chhattisgarh_data(self):
+        """Setup complete Chhattisgarh districts and areas data"""
+        self.regions_districts_areas = {
+            "Raipur Division": {
+                "Raipur": [
+                    "Pandri", "Shankar Nagar", "Mana Camp", "Gudhiyari", "Tatibandh", 
+                    "Avanti Vihar", "Sadar Bazar", "Civil Lines", "Bhatagaon", "Ghodidongri",
+                    "Kabir Nagar", "Bodri", "Daldal Seoni", "Devendra Nagar", "Fafadih",
+                    "Ganj", "Khamtarai", "Samta Colony", "Banjari", "Dumna", "New Bus Stand"
+                ],
+                "Durg": [
+                    "Hirapur", "Nandini Road", "Juna Durg", "Pulgaon", "Sakhi Nagar",
+                    "Mominpura", "Killa", "Borsi", "Kohka", "Risali"
+                ],
+                "Bhilai": [
+                    "Sector 1", "Sector 2", "Sector 3", "Sector 4", "Sector 5",
+                    "Sector 6", "Sector 7", "Sector 8", "Sector 9", "Sector 10",
+                    "Supela", "Nehru Nagar", "Power House", "Bhilai Nagar"
+                ],
+                "Baloda Bazar": [
+                    "Baloda Bazar", "Kasdol", "Bilaigarh", "Palari", "Simga"
+                ]
+            },
+            "Bilaspur Division": {
+                "Bilaspur": [
+                    "Link Road", "Mungeli Road", "Vivekanand Nagar", "Ganiyari", "Koni",
+                    "Sarkanda", "Guru Ghasidas Nagar", "Civil Lines", "Mopka", "Kharora"
+                ],
+                "Korba": [
+                    "Korba Town", "Kusmunda", "Katghora", "Pali", "Chirimiri"
+                ],
+                "Raigarh": [
+                    "Gharghoda", "Sarangarh", "Kharsia", "Dharmajaigarh", "Baramkela"
+                ],
+                "Janjgir-Champa": [
+                    "Janjgir", "Champa", "Akaltara", "Baloda", "Nariyara"
+                ]
+            },
+            "Bastar Division": {
+                "Bastar": [
+                    "Jagdalpur", "Keskal", "Bade Pondum", "Bharatpur", "Bhanpuri"
+                ],
+                "Kanker": [
+                    "Kanker Town", "Charama", "Narharpur", "Bhanupratappur", "Antagarh"
+                ],
+                "Kondagaon": [
+                    "Kondagaon Town", "Keshkal", "Makdi", "Pharasgaon"
+                ],
+                "Dantewada": [
+                    "Dantewada", "Geedam", "Katekalyan", "Kuakonda"
+                ]
+            },
+            "Surguja Division": {
+                "Surguja": [
+                    "Ambikapur", "Sitapur", "Lakhanpur", "Odgi", "Wadrafnagar"
+                ],
+                "Balrampur": [
+                    "Balrampur", "Ramanujganj", "Rajpur", "Shankargarh"
+                ],
+                "Koriya": [
+                    "Baikunthpur", "Sonhat", "Manendragarh", "Khadsa"
+                ],
+                "Surajpur": [
+                    "Surajpur", "Premnagar", "Odgi", "Bhaiyathan"
+                ]
+            },
+            "Durg Division": {
+                "Rajnandgaon": [
+                    "Rajnandgaon", "Dongargarh", "Chhuikhadan", "Gandai", "Pendra"
+                ],
+                "Kawardha": [
+                    "Kawardha", "Bodla", "Pandariya", "Sahaspur"
+                ],
+                "Bemetara": [
+                    "Bemetara", "Berla", "Saja", "Thanakhman"
+                ],
+                "Gariaband": [
+                    "Gariaband", "Deobhog", "Chhura", "Mainpur"
+                ]
+            }
+        }
+        
+        self.regions = list(self.regions_districts_areas.keys())
+        self.districts = []
+        for districts in self.regions_districts_areas.values():
+            self.districts.extend(districts.keys())
+    
+    def setup_ad_rates(self):
+        """Setup advertisement rates for different sizes and colors"""
+        self.ad_rates = {
+            "Mini": {
+                "B/W": 18.75,
+                "Color": 28.12
+            },
+            "Quarter": {
+                "B/W": 37.47,
+                "Color": 56.20
+            },
+            "Half": {
+                "B/W": 75.00,
+                "Color": 112.50
+            },
+            "Full": {
+                "B/W": 150.00,
+                "Color": 225.00
+            }
+        }
+        
+        self.ad_sizes = ["Mini", "Quarter", "Half", "Full"]
+    
+    def create_gui(self):
+        # Header
+        header_frame = ttk.Frame(self.root)
+        header_frame.pack(fill='x', padx=10, pady=5)
+        
+        title_label = ttk.Label(header_frame, text="छत्तीसगढ़ वॉच - Complete Billing System", 
+                               font=('Arial', 16, 'bold'), foreground='#f39c12')
+        title_label.pack(side='left')
+        
+        user_label = ttk.Label(header_frame, text=f"User: {self.user[3]}", 
+                              font=('Arial', 10), foreground='#bdc3c7')
+        user_label.pack(side='right')
+        
+        copyright_label = ttk.Label(header_frame, text=self.copyright_text, 
+                                   font=('Arial', 8), foreground='#bdc3c7')
+        copyright_label.pack(side='right', padx=20)
+        
+        # Create notebook for tabs
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill='both', expand=True, padx=10, pady=5)
+        
+        # Dashboard Tab
+        self.dashboard_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.dashboard_frame, text="📊 Dashboard")
+        self.create_dashboard()
+        
+        # Invoice Tab
+        self.invoice_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.invoice_frame, text="🧾 Invoice Management")
+        self.create_invoice_tab()
+        
+        # Client Management Tab
+        self.client_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.client_frame, text="👥 Client Management")
+        self.create_client_tab()
+        
+        # Ledger Tab
+        self.ledger_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.ledger_frame, text="📒 Ledger")
+        self.create_ledger_tab()
+        
+        # Balance Sheet Tab
+        self.balance_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.balance_frame, text="📈 Balance Sheet")
+        self.create_balance_tab()
+        
+        # Reports Tab
+        self.reports_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.reports_frame, text="📋 Reports")
+        self.create_reports_tab()
+        
+        # Statement Tab
+        self.statement_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.statement_frame, text="📄 Statement")
+        self.create_statement_tab()
+        
+        # User Management Tab (Admin only)
+        if self.user[4] == "Admin":
+            self.users_frame = ttk.Frame(self.notebook)
+            self.notebook.add(self.users_frame, text="👤 User Management")
+            self.create_users_tab()
+    
+    def create_dashboard(self):
+        # Create scrollable frame for dashboard
+        dash_main = ttk.Frame(self.dashboard_frame)
+        dash_main.pack(fill='both', expand=True)
+        
+        # Create canvas and scrollbar
+        dash_canvas = tk.Canvas(dash_main, bg='#2c3e50')
+        dash_scrollbar = ttk.Scrollbar(dash_main, orient='vertical', command=dash_canvas.yview)
+        dash_scrollable = ttk.Frame(dash_canvas)
+        
+        dash_scrollable.bind(
+            "<Configure>",
+            lambda e: dash_canvas.configure(scrollregion=dash_canvas.bbox("all"))
+        )
+        
+        dash_canvas.create_window((0, 0), window=dash_scrollable, anchor="nw")
+        dash_canvas.configure(yscrollcommand=dash_scrollbar.set)
+        
+        dash_canvas.pack(side="left", fill="both", expand=True)
+        dash_scrollbar.pack(side="right", fill="y")
+        
+        # Bind mouse wheel to scroll
+        dash_canvas.bind("<MouseWheel>", lambda e: dash_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        
+        # Dashboard content
+        dash_frame = ttk.Frame(dash_scrollable)
+        dash_frame.pack(fill='both', expand=True, padx=20, pady=20)
+        
+        # Summary cards
+        cards_frame = ttk.Frame(dash_frame)
+        cards_frame.pack(fill='x', pady=10)
+        
+        # Total Invoices
+        invoice_card = ttk.LabelFrame(cards_frame, text="Total Invoices", padding=15)
+        invoice_card.grid(row=0, column=0, padx=10, pady=5, sticky='ew')
+        self.invoice_count_label = ttk.Label(invoice_card, text="0", font=('Arial', 24, 'bold'), foreground='#3498db')
+        self.invoice_count_label.pack()
+        ttk.Label(invoice_card, text="This Month").pack()
+        
+        # Total Revenue
+        revenue_card = ttk.LabelFrame(cards_frame, text="Total Revenue", padding=15)
+        revenue_card.grid(row=0, column=1, padx=10, pady=5, sticky='ew')
+        self.revenue_label = ttk.Label(revenue_card, text="₹0", font=('Arial', 24, 'bold'), foreground='#2ecc71')
+        self.revenue_label.pack()
+        ttk.Label(revenue_card, text="This Month").pack()
+        
+        # Pending Payments
+        pending_card = ttk.LabelFrame(cards_frame, text="Pending Payments", padding=15)
+        pending_card.grid(row=0, column=2, padx=10, pady=5, sticky='ew')
+        self.pending_label = ttk.Label(pending_card, text="₹0", font=('Arial', 24, 'bold'), foreground='#e74c3c')
+        self.pending_label.pack()
+        ttk.Label(pending_card, text="Outstanding").pack()
+        
+        # Paid Invoices
+        paid_card = ttk.LabelFrame(cards_frame, text="Paid Invoices", padding=15)
+        paid_card.grid(row=0, column=3, padx=10, pady=5, sticky='ew')
+        self.paid_label = ttk.Label(paid_card, text="₹0", font=('Arial', 24, 'bold'), foreground='#9b59b6')
+        self.paid_label.pack()
+        ttk.Label(paid_card, text="This Month").pack()
+        
+        # Recent Invoices
+        recent_frame = ttk.LabelFrame(dash_frame, text="Recent Invoices", padding=10)
+        recent_frame.pack(fill='both', expand=True, pady=10)
+        
+        # Add scrollbar to recent invoices treeview
+        recent_tree_frame = ttk.Frame(recent_frame)
+        recent_tree_frame.pack(fill='both', expand=True)
+        
+        columns = ("Bill No", "Client", "Date", "Amount", "Status")
+        self.recent_tree = ttk.Treeview(recent_tree_frame, columns=columns, show='headings', height=8)
+        
+        for col in columns:
+            self.recent_tree.heading(col, text=col)
+            self.recent_tree.column(col, width=120)
+        
+        recent_scrollbar = ttk.Scrollbar(recent_tree_frame, orient='vertical', command=self.recent_tree.yview)
+        self.recent_tree.configure(yscrollcommand=recent_scrollbar.set)
+        
+        self.recent_tree.pack(side='left', fill='both', expand=True)
+        recent_scrollbar.pack(side='right', fill='y')
+        
+        # Quick actions
+        actions_frame = ttk.Frame(dash_frame)
+        actions_frame.pack(fill='x', pady=10)
+        
+        ttk.Button(actions_frame, text="Create New Invoice", command=lambda: self.notebook.select(1)).pack(side='left', padx=5)
+        ttk.Button(actions_frame, text="Client Management", command=lambda: self.notebook.select(2)).pack(side='left', padx=5)
+        ttk.Button(actions_frame, text="View Ledger", command=lambda: self.notebook.select(3)).pack(side='left', padx=5)
+        ttk.Button(actions_frame, text="Generate Reports", command=lambda: self.notebook.select(5)).pack(side='left', padx=5)
+    
+    def update_dashboard(self):
+        """Update dashboard with real data"""
+        try:
+            # Get current month and year
+            current_month = date.today().strftime("%Y-%m")
+            
+            # Total invoices this month
+            self.cursor.execute('''
+                SELECT COUNT(*) FROM invoices 
+                WHERE strftime('%Y-%m', created_date) = ?
+            ''', (current_month,))
+            invoice_count = self.cursor.fetchone()[0]
+            self.invoice_count_label.config(text=str(invoice_count))
+            
+            # Total revenue this month
+            self.cursor.execute('''
+                SELECT COALESCE(SUM(grand_total), 0) FROM invoices 
+                WHERE strftime('%Y-%m', created_date) = ?
+            ''', (current_month,))
+            revenue = self.cursor.fetchone()[0]
+            self.revenue_label.config(text=f"₹{revenue:,.2f}")
+            
+            # Pending payments
+            self.cursor.execute('''
+                SELECT COALESCE(SUM(balance_amount), 0) FROM invoices 
+                WHERE status = 'Unpaid'
+            ''')
+            pending = self.cursor.fetchone()[0]
+            self.pending_label.config(text=f"₹{pending:,.2f}")
+            
+            # Paid invoices this month
+            self.cursor.execute('''
+                SELECT COALESCE(SUM(paid_amount), 0) FROM invoices 
+                WHERE strftime('%Y-%m', created_date) = ? AND status = 'Paid'
+            ''', (current_month,))
+            paid = self.cursor.fetchone()[0]
+            self.paid_label.config(text=f"₹{paid:,.2f}")
+            
+            # Load recent invoices
+            for item in self.recent_tree.get_children():
+                self.recent_tree.delete(item)
+            
+            self.cursor.execute('''
+                SELECT bill_no, client_name, invoice_date, grand_total, status 
+                FROM invoices 
+                ORDER BY created_date DESC, id DESC 
+                LIMIT 10
+            ''')
+            recent_invoices = self.cursor.fetchall()
+            
+            for invoice in recent_invoices:
+                formatted_invoice = list(invoice)
+                formatted_invoice[3] = f"₹{invoice[3]:,.2f}"
+                self.recent_tree.insert('', 'end', values=formatted_invoice)
+                
+        except Exception as e:
+            print(f"Error updating dashboard: {e}")
+    
+    def create_invoice_tab(self):
+        # Main frame with scrollbar
+        main_frame = ttk.Frame(self.invoice_frame)
+        main_frame.pack(fill='both', expand=True)
+        
+        # Create canvas and scrollbar for invoice tab
+        inv_canvas = tk.Canvas(main_frame, bg='#2c3e50')
+        inv_scrollbar = ttk.Scrollbar(main_frame, orient='vertical', command=inv_canvas.yview)
+        inv_scrollable = ttk.Frame(inv_canvas)
+        
+        inv_scrollable.bind(
+            "<Configure>",
+            lambda e: inv_canvas.configure(scrollregion=inv_canvas.bbox("all"))
+        )
+        
+        inv_canvas.create_window((0, 0), window=inv_scrollable, anchor="nw")
+        inv_canvas.configure(yscrollcommand=inv_scrollbar.set)
+        
+        inv_canvas.pack(side="left", fill="both", expand=True)
+        inv_scrollbar.pack(side="right", fill="y")
+        
+        # Bind mouse wheel to scroll
+        inv_canvas.bind("<MouseWheel>", lambda e: inv_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        
+        # Content frame
+        content_frame = ttk.Frame(inv_scrollable)
+        content_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Left frame for invoice creation
+        left_frame = ttk.LabelFrame(content_frame, text="Create/Edit Invoice", padding=15)
+        left_frame.pack(side='left', fill='y', padx=(0, 10))
+        
+        # Right frame for invoice list
+        right_frame = ttk.Frame(content_frame)
+        right_frame.pack(side='right', fill='both', expand=True)
+        
+        # Client Details Section
+        client_frame = ttk.LabelFrame(left_frame, text="Client Details", padding=10)
+        client_frame.pack(fill='x', pady=5)
+        
+        ttk.Label(client_frame, text="Agency Name:*").grid(row=0, column=0, sticky='w', pady=2)
+        self.agency_name = ttk.Entry(client_frame, width=30)
+        self.agency_name.grid(row=0, column=1, pady=2, padx=5)
+        
+        ttk.Label(client_frame, text="Place:*").grid(row=1, column=0, sticky='w', pady=2)
+        self.place = ttk.Entry(client_frame, width=30)
+        self.place.grid(row=1, column=1, pady=2, padx=5)
+        
+        ttk.Label(client_frame, text="Client Name:*").grid(row=2, column=0, sticky='w', pady=2)
+        self.client_name = tk.Text(client_frame, width=30, height=2)
+        self.client_name.grid(row=2, column=1, pady=2, padx=5)
+        
+        ttk.Label(client_frame, text="GSTIN:").grid(row=3, column=0, sticky='w', pady=2)
+        self.client_gstin = ttk.Entry(client_frame, width=30)
+        self.client_gstin.grid(row=3, column=1, pady=2, padx=5)
+        
+        # Location Details
+        loc_frame = ttk.LabelFrame(left_frame, text="Location Details", padding=10)
+        loc_frame.pack(fill='x', pady=5)
+        
+        ttk.Label(loc_frame, text="Region:*").grid(row=0, column=0, sticky='w', pady=2)
+        self.region = ttk.Combobox(loc_frame, values=self.regions, state="readonly", width=27)
+        self.region.grid(row=0, column=1, pady=2, padx=5)
+        self.region.bind('<<ComboboxSelected>>', self.update_district_combo)
+        
+        ttk.Label(loc_frame, text="District:*").grid(row=1, column=0, sticky='w', pady=2)
+        self.district = ttk.Combobox(loc_frame, state="readonly", width=27)
+        self.district.grid(row=1, column=1, pady=2, padx=5)
+        self.district.bind('<<ComboboxSelected>>', self.update_area_combo)
+        
+        ttk.Label(loc_frame, text="Area:*").grid(row=2, column=0, sticky='w', pady=2)
+        self.area = ttk.Combobox(loc_frame, state="readonly", width=27)
+        self.area.grid(row=2, column=1, pady=2, padx=5)
+        
+        # Invoice Details
+        inv_frame = ttk.LabelFrame(left_frame, text="Invoice Details", padding=10)
+        inv_frame.pack(fill='x', pady=5)
+        
+        ttk.Label(inv_frame, text="Invoice Date:*").grid(row=0, column=0, sticky='w', pady=2)
+        self.invoice_date = ttk.Entry(inv_frame, width=27)
+        self.invoice_date.insert(0, date.today().strftime("%d-%m-%Y"))
+        self.invoice_date.grid(row=0, column=1, pady=2, padx=5)
+        
+        ttk.Label(inv_frame, text="Bill No:*").grid(row=1, column=0, sticky='w', pady=2)
+        self.bill_no = ttk.Entry(inv_frame, width=27)
+        self.bill_no.grid(row=1, column=1, pady=2, padx=5)
+        
+        ttk.Label(inv_frame, text="RO No:").grid(row=2, column=0, sticky='w', pady=2)
+        self.ro_no = ttk.Entry(inv_frame, width=27)
+        self.ro_no.grid(row=2, column=1, pady=2, padx=5)
+        
+        ttk.Label(inv_frame, text="RO Date:").grid(row=3, column=0, sticky='w', pady=2)
+        self.ro_date = ttk.Entry(inv_frame, width=27)
+        self.ro_date.grid(row=3, column=1, pady=2, padx=5)
+        
+        ttk.Label(inv_frame, text="HSN Code:").grid(row=4, column=0, sticky='w', pady=2)
+        self.hsn_code = ttk.Entry(inv_frame, width=27)
+        self.hsn_code.insert(0, "998363")
+        self.hsn_code.grid(row=4, column=1, pady=2, padx=5)
+        
+        # Advertisement Details
+        ad_frame = ttk.LabelFrame(left_frame, text="Advertisement Details", padding=10)
+        ad_frame.pack(fill='x', pady=5)
+        
+        ttk.Label(ad_frame, text="Publication Date:*").grid(row=0, column=0, sticky='w', pady=2)
+        self.pub_date = ttk.Entry(ad_frame, width=27)
+        self.pub_date.grid(row=0, column=1, pady=2, padx=5)
+        
+        ttk.Label(ad_frame, text="Insertion:*").grid(row=1, column=0, sticky='w', pady=2)
+        self.insertion = ttk.Entry(ad_frame, width=27)
+        self.insertion.insert(0, "1")
+        self.insertion.grid(row=1, column=1, pady=2, padx=5)
+        
+        ttk.Label(ad_frame, text="Color/BW:*").grid(row=2, column=0, sticky='w', pady=2)
+        self.color_type = ttk.Combobox(ad_frame, values=["B/W", "Color"], state="readonly", width=24)
+        self.color_type.set("B/W")
+        self.color_type.grid(row=2, column=1, pady=2, padx=5)
+        self.color_type.bind('<<ComboboxSelected>>', self.update_rate)
+        
+        ttk.Label(ad_frame, text="Ad Size:*").grid(row=3, column=0, sticky='w', pady=2)
+        self.ad_size = ttk.Combobox(ad_frame, values=self.ad_sizes, state="readonly", width=24)
+        self.ad_size.set("Quarter")
+        self.ad_size.grid(row=3, column=1, pady=2, padx=5)
+        self.ad_size.bind('<<ComboboxSelected>>', self.update_rate)
+        
+        ttk.Label(ad_frame, text="Page No:*").grid(row=4, column=0, sticky='w', pady=2)
+        self.page_no = ttk.Entry(ad_frame, width=27)
+        self.page_no.grid(row=4, column=1, pady=2, padx=5)
+        
+        ttk.Label(ad_frame, text="Particulars:*").grid(row=5, column=0, sticky='w', pady=2)
+        self.particulars = ttk.Entry(ad_frame, width=27)
+        self.particulars.grid(row=5, column=1, pady=2, padx=5)
+        
+        ttk.Label(ad_frame, text="Ad Size (cm):*").grid(row=6, column=0, sticky='w', pady=2)
+        self.ad_size_cm = ttk.Entry(ad_frame, width=27)
+        self.ad_size_cm.insert(0, "8 x 8")
+        self.ad_size_cm.grid(row=6, column=1, pady=2, padx=5)
+        
+        ttk.Label(ad_frame, text="Total Size:*").grid(row=7, column=0, sticky='w', pady=2)
+        self.total_size = ttk.Entry(ad_frame, width=27)
+        self.total_size.insert(0, "64")
+        self.total_size.grid(row=7, column=1, pady=2, padx=5)
+        
+        ttk.Label(ad_frame, text="Rate:*").grid(row=8, column=0, sticky='w', pady=2)
+        self.rate = ttk.Entry(ad_frame, width=27)
+        self.rate.insert(0, "37.47")
+        self.rate.grid(row=8, column=1, pady=2, padx=5)
+        
+        # Additional Charges
+        charges_frame = ttk.LabelFrame(left_frame, text="Additional Charges", padding=10)
+        charges_frame.pack(fill='x', pady=5)
+        
+        ttk.Label(charges_frame, text="Page Premium (Front):").grid(row=0, column=0, sticky='w', pady=2)
+        self.page_premium_front = ttk.Entry(charges_frame, width=27)
+        self.page_premium_front.insert(0, "0")
+        self.page_premium_front.grid(row=0, column=1, pady=2, padx=5)
+        
+        ttk.Label(charges_frame, text="Page Premium (Back):").grid(row=1, column=0, sticky='w', pady=2)
+        self.page_premium_back = ttk.Entry(charges_frame, width=27)
+        self.page_premium_back.insert(0, "0")
+        self.page_premium_back.grid(row=1, column=1, pady=2, padx=5)
+        
+        ttk.Label(charges_frame, text="Color Charge:").grid(row=2, column=0, sticky='w', pady=2)
+        self.color_charge = ttk.Entry(charges_frame, width=27)
+        self.color_charge.insert(0, "0")
+        self.color_charge.grid(row=2, column=1, pady=2, padx=5)
+        
+        ttk.Label(charges_frame, text="Deduction Amount:").grid(row=3, column=0, sticky='w', pady=2)
+        self.deduction_amount = ttk.Entry(charges_frame, width=27)
+        self.deduction_amount.insert(0, "0")
+        self.deduction_amount.grid(row=3, column=1, pady=2, padx=5)
+        
+        # Buttons
+        btn_frame = ttk.Frame(left_frame)
+        btn_frame.pack(fill='x', pady=10)
+        
+        ttk.Button(btn_frame, text="New Invoice", command=self.new_invoice).pack(side='left', padx=5)
+        ttk.Button(btn_frame, text="Calculate Total", command=self.calculate_total).pack(side='left', padx=5)
+        ttk.Button(btn_frame, text="Save Invoice", command=self.save_invoice).pack(side='left', padx=5)
+        ttk.Button(btn_frame, text="Print Current Invoice", command=self.print_current_invoice).pack(side='left', padx=5)
+        
+        # Amount Display
+        amount_frame = ttk.LabelFrame(left_frame, text="Amount Details", padding=10)
+        amount_frame.pack(fill='x', pady=5)
+        
+        ttk.Label(amount_frame, text="Base Amount:").grid(row=0, column=0, sticky='w', pady=2)
+        self.base_amount = ttk.Label(amount_frame, text="₹0.00", foreground='green')
+        self.base_amount.grid(row=0, column=1, sticky='e', pady=2)
+        
+        ttk.Label(amount_frame, text="CGST (2.5%):").grid(row=1, column=0, sticky='w', pady=2)
+        self.cgst_amount = ttk.Label(amount_frame, text="₹0.00", foreground='blue')
+        self.cgst_amount.grid(row=1, column=1, sticky='e', pady=2)
+        
+        ttk.Label(amount_frame, text="SGST (2.5%):").grid(row=2, column=0, sticky='w', pady=2)
+        self.sgst_amount = ttk.Label(amount_frame, text="₹0.00", foreground='blue')
+        self.sgst_amount.grid(row=2, column=1, sticky='e', pady=2)
+        
+        ttk.Label(amount_frame, text="Grand Total:").grid(row=3, column=0, sticky='w', pady=2)
+        self.grand_total = ttk.Label(amount_frame, text="₹0.00", font=('Arial', 12, 'bold'), foreground='red')
+        self.grand_total.grid(row=3, column=1, sticky='e', pady=2)
+        
+        # Invoice list frame
+        list_frame = ttk.LabelFrame(right_frame, text="Invoice List", padding=10)
+        list_frame.pack(fill='both', expand=True)
+        
+        # Filter Section
+        filter_frame = ttk.Frame(list_frame)
+        filter_frame.pack(fill='x', pady=5)
+        
+        ttk.Label(filter_frame, text="Region:").pack(side='left', padx=5)
+        self.region_filter = ttk.Combobox(filter_frame, values=["All"] + self.regions, state="readonly", width=15)
+        self.region_filter.set("All")
+        self.region_filter.pack(side='left', padx=5)
+        self.region_filter.bind('<<ComboboxSelected>>', self.apply_filters)
+        
+        ttk.Label(filter_frame, text="District:").pack(side='left', padx=5)
+        self.district_filter = ttk.Combobox(filter_frame, values=["All"], state="readonly", width=15)
+        self.district_filter.set("All")
+        self.district_filter.pack(side='left', padx=5)
+        self.district_filter.bind('<<ComboboxSelected>>', self.apply_filters)
+        
+        ttk.Label(filter_frame, text="Status:").pack(side='left', padx=5)
+        self.status_filter = ttk.Combobox(filter_frame, values=["All", "Paid", "Unpaid"], state="readonly", width=15)
+        self.status_filter.set("All")
+        self.status_filter.pack(side='left', padx=5)
+        self.status_filter.bind('<<ComboboxSelected>>', self.apply_filters)
+        
+        ttk.Button(filter_frame, text="Clear Filters", command=self.clear_filters).pack(side='left', padx=10)
+        
+        # Invoice table with scrollbar
+        tree_frame = ttk.Frame(list_frame)
+        tree_frame.pack(fill='both', expand=True)
+        
+        columns = ("ID", "Bill No", "Client", "Date", "Amount", "Status", "Region", "District")
+        self.invoice_tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=20)
+        
+        column_widths = {"ID": 0, "Bill No": 100, "Client": 200, "Date": 100, "Amount": 100, "Status": 80, "Region": 120, "District": 120}
+        
+        for col in columns:
+            self.invoice_tree.heading(col, text=col)
+            self.invoice_tree.column(col, width=column_widths[col])
+        
+        # Hide ID column
+        self.invoice_tree.column("ID", width=0, stretch=False)
+        
+        # Add scrollbar to treeview
+        tree_scrollbar = ttk.Scrollbar(tree_frame, orient='vertical', command=self.invoice_tree.yview)
+        self.invoice_tree.configure(yscrollcommand=tree_scrollbar.set)
+        
+        self.invoice_tree.pack(side='left', fill='both', expand=True)
+        tree_scrollbar.pack(side='right', fill='y')
+        self.invoice_tree.bind('<<TreeviewSelect>>', self.on_invoice_select)
+        
+        # Action buttons for invoice list
+        action_frame = ttk.Frame(list_frame)
+        action_frame.pack(fill='x', pady=5)
+        
+        ttk.Button(action_frame, text="View Invoice", command=self.view_invoice).pack(side='left', padx=5)
+        ttk.Button(action_frame, text="Edit Invoice", command=self.edit_invoice).pack(side='left', padx=5)
+        ttk.Button(action_frame, text="Delete Invoice", command=self.delete_invoice).pack(side='left', padx=5)
+        ttk.Button(action_frame, text="Export PDF", command=self.export_invoice_pdf).pack(side='left', padx=5)
+        ttk.Button(action_frame, text="Mark Paid", command=self.mark_paid).pack(side='left', padx=5)
+        ttk.Button(action_frame, text="Export Excel", command=self.export_excel).pack(side='left', padx=5)
+    
+    def update_district_combo(self, event=None):
+        region = self.region.get()
+        if region in self.regions_districts_areas:
+            districts = list(self.regions_districts_areas[region].keys())
+            self.district['values'] = districts
+            self.district.set('')
+            self.area.set('')
+            self.area['values'] = []
+    
+    def update_area_combo(self, event=None):
+        region = self.region.get()
+        district = self.district.get()
+        if region and district and district in self.regions_districts_areas[region]:
+            areas = self.regions_districts_areas[region][district]
+            self.area['values'] = areas
+            self.area.set('')
+    
+    def update_rate(self, event=None):
+        """Update rate based on selected ad size and color type"""
+        ad_size = self.ad_size.get()
+        color_type = self.color_type.get()
+        
+        if ad_size and color_type:
+            rate = self.ad_rates[ad_size][color_type]
+            self.rate.delete(0, tk.END)
+            self.rate.insert(0, str(rate))
+            
+            # Update total size based on ad size
+            size_mapping = {
+                "Mini": "16",
+                "Quarter": "64", 
+                "Half": "128",
+                "Full": "256"
+            }
+            if ad_size in size_mapping:
+                self.total_size.delete(0, tk.END)
+                self.total_size.insert(0, size_mapping[ad_size])
+    
+    def calculate_total(self):
+        try:
+            # Calculate base amount
+            total_size = float(self.total_size.get())
+            rate = float(self.rate.get())
+            insertion = int(self.insertion.get())
+            base_amount = total_size * rate * insertion
+            
+            # Additional charges
+            page_premium_front = float(self.page_premium_front.get() or 0)
+            page_premium_back = float(self.page_premium_back.get() or 0)
+            color_charge = float(self.color_charge.get() or 0)
+            deduction = float(self.deduction_amount.get() or 0)
+            
+            # Total before GST
+            total_before_gst = base_amount + page_premium_front + page_premium_back + color_charge - deduction
+            
+            # GST calculations
+            cgst_rate = 2.5  # 2.5%
+            sgst_rate = 2.5  # 2.5%
+            
+            cgst_amount = (total_before_gst * cgst_rate) / 100
+            sgst_amount = (total_before_gst * sgst_rate) / 100
+            
+            grand_total = total_before_gst + cgst_amount + sgst_amount
+            
+            # Update labels
+            self.base_amount.config(text=f"₹{base_amount:,.2f}")
+            self.cgst_amount.config(text=f"₹{cgst_amount:,.2f}")
+            self.sgst_amount.config(text=f"₹{sgst_amount:,.2f}")
+            self.grand_total.config(text=f"₹{grand_total:,.2f}")
+            
+            return grand_total
+            
+        except ValueError as e:
+            messagebox.showerror("Error", f"Please enter valid numeric values: {str(e)}")
+            return 0
+    
+    def new_invoice(self):
+        self.current_invoice_id = None
+        self.agency_name.delete(0, tk.END)
+        self.place.delete(0, tk.END)
+        self.client_name.delete('1.0', tk.END)
+        self.client_gstin.delete(0, tk.END)
+        self.region.set('')
+        self.district.set('')
+        self.area.set('')
+        self.invoice_date.delete(0, tk.END)
+        self.invoice_date.insert(0, date.today().strftime("%d-%m-%Y"))
+        self.bill_no.delete(0, tk.END)
+        self.ro_no.delete(0, tk.END)
+        self.ro_date.delete(0, tk.END)
+        self.hsn_code.delete(0, tk.END)
+        self.hsn_code.insert(0, "998363")
+        self.pub_date.delete(0, tk.END)
+        self.insertion.delete(0, tk.END)
+        self.insertion.insert(0, "1")
+        self.color_type.set("B/W")
+        self.ad_size.set("Quarter")
+        self.page_no.delete(0, tk.END)
+        self.particulars.delete(0, tk.END)
+        self.ad_size_cm.delete(0, tk.END)
+        self.ad_size_cm.insert(0, "8 x 8")
+        self.total_size.delete(0, tk.END)
+        self.total_size.insert(0, "64")
+        self.rate.delete(0, tk.END)
+        self.rate.insert(0, "37.47")
+        self.page_premium_front.delete(0, tk.END)
+        self.page_premium_front.insert(0, "0")
+        self.page_premium_back.delete(0, tk.END)
+        self.page_premium_back.insert(0, "0")
+        self.color_charge.delete(0, tk.END)
+        self.color_charge.insert(0, "0")
+        self.deduction_amount.delete(0, tk.END)
+        self.deduction_amount.insert(0, "0")
+        
+        self.base_amount.config(text="₹0.00")
+        self.cgst_amount.config(text="₹0.00")
+        self.sgst_amount.config(text="₹0.00")
+        self.grand_total.config(text="₹0.00")
+    
+    def save_invoice(self):
+        try:
+            # Validate required fields
+            required_fields = [
+                self.agency_name.get().strip(),
+                self.place.get().strip(),
+                self.client_name.get('1.0', tk.END).strip(),
+                self.region.get(),
+                self.district.get(),
+                self.area.get(),
+                self.invoice_date.get().strip(),
+                self.bill_no.get().strip(),
+                self.pub_date.get().strip()
+            ]
+            
+            if not all(required_fields):
+                messagebox.showerror("Error", "Please fill all required fields (*)")
+                return
+            
+            # Calculate total
+            grand_total = self.calculate_total()
+            if grand_total == 0:
+                messagebox.showerror("Error", "Please calculate total first")
+                return
+            
+            # Generate invoice number
+            today = date.today()
+            self.cursor.execute("SELECT COUNT(*) FROM invoices WHERE strftime('%m-%Y', created_date) = ?", 
+                              (today.strftime('%m-%Y'),))
+            count = self.cursor.fetchone()[0] + 1
+            invoice_number = f"INV-{today.strftime('%Y%m')}-{count:04d}"
+            
+            # Get calculated values
+            base_amount = float(self.total_size.get()) * float(self.rate.get()) * int(self.insertion.get())
+            cgst_amount = (base_amount * 2.5) / 100
+            sgst_amount = (base_amount * 2.5) / 100
+            
+            # Prepare invoice data - ALL 39 VALUES
+            invoice_data = (
+                invoice_number,                    # 1. invoice_number
+                self.agency_name.get().strip(),    # 2. agency_name
+                self.place.get().strip(),          # 3. place
+                self.client_name.get('1.0', tk.END).strip(),  # 4. client_name
+                self.client_gstin.get().strip(),   # 5. client_gstin
+                self.region.get(),                 # 6. region
+                self.district.get(),               # 7. district
+                self.area.get(),                   # 8. area
+                self.invoice_date.get().strip(),   # 9. invoice_date
+                self.bill_no.get().strip(),        # 10. bill_no
+                self.ro_no.get().strip(),          # 11. ro_no
+                self.ro_date.get().strip(),        # 12. ro_date
+                self.hsn_code.get().strip(),       # 13. hsn_code
+                self.pub_date.get().strip(),       # 14. pub_date
+                self.insertion.get().strip(),      # 15. insertion
+                self.color_type.get(),             # 16. color_type
+                self.page_no.get().strip(),        # 17. page_no
+                self.particulars.get().strip(),    # 18. particulars
+                self.ad_size_cm.get().strip(),     # 19. ad_size
+                self.total_size.get().strip(),     # 20. total_size
+                float(self.rate.get()),            # 21. rate
+                base_amount,                       # 22. amount
+                float(self.page_premium_front.get() or 0),  # 23. page_premium_front
+                float(self.page_premium_back.get() or 0),   # 24. page_premium_back
+                float(self.color_charge.get() or 0),        # 25. color_charge
+                float(self.deduction_amount.get() or 0),    # 26. deduction_amount
+                2.5,  # 27. cgst_rate
+                2.5,  # 28. sgst_rate
+                0,    # 29. igst_rate
+                cgst_amount,  # 30. cgst_amount
+                sgst_amount,  # 31. sgst_amount
+                0,    # 32. igst_amount
+                grand_total,  # 33. grand_total
+                0,  # 34. paid_amount
+                grand_total,  # 35. balance_amount
+                "Unpaid",  # 36. status
+                self.user[3],  # 37. created_by
+                today.strftime("%Y-%m-%d")  # 38. created_date
+            )
+            
+            if self.current_invoice_id:
+                # Update existing invoice
+                update_query = '''
+                    UPDATE invoices SET 
+                    invoice_number=?, agency_name=?, place=?, client_name=?, client_gstin=?, region=?, district=?, area=?,
+                    invoice_date=?, bill_no=?, ro_no=?, ro_date=?, hsn_code=?, pub_date=?, insertion=?,
+                    color_type=?, page_no=?, particulars=?, ad_size=?, total_size=?, rate=?, amount=?,
+                    page_premium_front=?, page_premium_back=?, color_charge=?, deduction_amount=?,
+                    cgst_rate=?, sgst_rate=?, igst_rate=?, cgst_amount=?, sgst_amount=?, igst_amount=?,
+                    grand_total=?, paid_amount=?, balance_amount=?, status=?, created_by=?, created_date=?
+                    WHERE id=?
+                '''
+                update_data = invoice_data + (self.current_invoice_id,)
+                self.cursor.execute(update_query, update_data)
+                message = "Invoice updated successfully!"
+            else:
+                # Insert new invoice - ALL 39 VALUES (including NULL for id)
+                self.cursor.execute('''
+                    INSERT INTO invoices VALUES (
+                        NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    )
+                ''', invoice_data)
+                message = f"Invoice {invoice_number} saved successfully!"
+                
+                # Add to ledger
+                self.add_ledger_entry(invoice_number, self.agency_name.get().strip(), grand_total, "Invoice Created")
+            
+            self.conn.commit()
+            messagebox.showinfo("Success", message)
+            self.load_invoices()
+            self.update_dashboard()
+            self.new_invoice()
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save invoice: {str(e)}")
+            print(f"Detailed error: {e}")  # Debugging ke liye
+    
+    def add_ledger_entry(self, voucher_no, party_name, amount, description):
+        try:
+            # Get last balance
+            self.cursor.execute("SELECT balance FROM ledger ORDER BY id DESC LIMIT 1")
+            last_balance = self.cursor.fetchone()
+            balance = amount + (last_balance[0] if last_balance else 0)
+            
+            self.cursor.execute('''
+                INSERT INTO ledger (date, voucher_type, voucher_no, party_name, description, debit, credit, balance)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (date.today().strftime("%Y-%m-%d"), "Invoice", voucher_no, party_name, 
+                  description, amount, 0, balance))
+            
+            self.conn.commit()
+        except Exception as e:
+            print(f"Error adding ledger entry: {e}")
+    
+    def load_invoices(self):
+        """Fixed: Properly load and display invoices"""
+        try:
+            # Clear existing items
+            for item in self.invoice_tree.get_children():
+                self.invoice_tree.delete(item)
+            
+            self.cursor.execute('''
+                SELECT id, bill_no, client_name, invoice_date, grand_total, status, region, district 
+                FROM invoices ORDER BY created_date DESC, id DESC
+            ''')
+            invoices = self.cursor.fetchall()
+            
+            for invoice in invoices:
+                formatted_invoice = list(invoice)
+                formatted_invoice[4] = f"₹{invoice[4]:,.2f}"  # Format amount
+                self.invoice_tree.insert('', 'end', values=formatted_invoice)
+                
+        except Exception as e:
+            print(f"Error loading invoices: {e}")
+    
+    def on_invoice_select(self, event):
+        selected = self.invoice_tree.selection()
+        if selected:
+            invoice_id = self.invoice_tree.item(selected[0])['values'][0]
+            self.current_invoice_id = invoice_id
+    
+    def view_invoice(self):
+        selected = self.invoice_tree.selection()
+        if not selected:
+            messagebox.showwarning("Warning", "Please select an invoice to view")
+            return
+        
+        invoice_id = self.invoice_tree.item(selected[0])['values'][0]
+        self.cursor.execute("SELECT * FROM invoices WHERE id=?", (invoice_id,))
+        invoice = self.cursor.fetchone()
+        
+        if invoice:
+            self.show_invoice_preview(invoice)
+    
+    def show_invoice_preview(self, invoice):
+        preview = tk.Toplevel(self.root)
+        preview.title(f"Invoice Preview - {invoice[10]}")
+        preview.geometry("600x700")
+        
+        # Create a text widget to display invoice details
+        text_widget = tk.Text(preview, wrap='word', font=('Arial', 10))
+        text_widget.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Format invoice details
+        details = f"""
+CHHATTISGARH WATCH
+
+AGENCY NAME: {invoice[1]}
+PLACE: {invoice[2]}
+CLIENT NAME: {invoice[3]}
+GSTIN: {invoice[4]}
+
+BILL NO: {invoice[10]}
+BILL DATE: {invoice[8]}
+RO NO: {invoice[11]}
+RO DATE: {invoice[12]}
+HSN Code: {invoice[13]}
+
+Advertisement Details:
+Publication Date: {invoice[14]}
+Insertion: {invoice[15]}
+Color/BW: {invoice[16]}
+Page: {invoice[17]}
+Particulars: {invoice[18]}
+Size: {invoice[19]}
+Total Size: {invoice[20]}
+Rate: ₹{invoice[21]:.2f}
+Amount: ₹{invoice[22]:,.2f}
+
+Additional Charges:
+Page Premium (Front): ₹{invoice[23]:,.2f}
+Page Premium (Back): ₹{invoice[24]:,.2f}
+Color Charge: ₹{invoice[25]:,.2f}
+Deduction: ₹{invoice[26]:,.2f}
+
+GST Breakdown:
+CGST (2.5%): ₹{invoice[30]:,.2f}
+SGST (2.5%): ₹{invoice[31]:,.2f}
+Grand Total: ₹{invoice[33]:,.2f}
+
+Status: {invoice[36]}
+        """
+        
+        text_widget.insert('1.0', details)
+        text_widget.config(state='disabled')
+        
+        ttk.Button(preview, text="Print Professional Invoice", 
+                  command=lambda: self.generate_professional_invoice(invoice)).pack(pady=10)
+        ttk.Button(preview, text="Close", command=preview.destroy).pack(pady=5)
+    
+    def generate_professional_invoice(self, invoice):
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            filetypes=[("PDF files", "*.pdf")],
+            title="Save Invoice As",
+            initialfile=f"Invoice_{invoice[10]}.pdf"
+        )
+        
+        if filename:
+            self.create_pdf_invoice(invoice, filename)
+    
+    def create_pdf_invoice(self, invoice, filename):
+        try:
+            doc = SimpleDocTemplate(filename, pagesize=letter, topMargin=72)
+            elements = []
+            
+            styles = getSampleStyleSheet()
+            
+            # Header - CHHATTISGARH WATCH
+            header_style = ParagraphStyle(
+                'HeaderStyle',
+                parent=styles['Normal'],
+                fontSize=16,
+                textColor=colors.black,
+                alignment=1,  # Center alignment
+                spaceAfter=20
+            )
+            header = Paragraph("<b>CHHATTISGARH WATCH</b>", header_style)
+            elements.append(header)
+            
+            # Agency and Bill Details Table
+            agency_data = [
+                ["AGENCY NAME:", invoice[1], "BILL NO:", invoice[10]],
+                ["PLACE:", invoice[2], "BILL DATE:", invoice[8]],
+                ["CLIENT NAME:", invoice[3], "RO NO:", invoice[11]],
+                ["", "", "RO DATE:", invoice[12]]
+            ]
+            
+            agency_table = Table(agency_data, colWidths=[100, 200, 80, 120])
+            agency_table.setStyle(TableStyle([
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ]))
+            elements.append(agency_table)
+            elements.append(Spacer(1, 12))
+            
+            # GST Invoice Header
+            gst_header = Paragraph("<b>GST Invoice</b>", styles['Normal'])
+            elements.append(gst_header)
+            elements.append(Spacer(1, 6))
+            
+            # Advertisement Details Table
+            ad_headers = ["Pub Date", "Insertion", "Color/BW", "Page", "Size", "Total Rate", "Amount"]
+            ad_data = [
+                ad_headers,
+                [
+                    invoice[14], 
+                    invoice[15], 
+                    invoice[16], 
+                    invoice[17], 
+                    invoice[19], 
+                    f"₹{float(invoice[21]):.2f}", 
+                    f"₹{float(invoice[22]):,.2f}"
+                ]
+            ]
+            
+            ad_table = Table(ad_data, colWidths=[70, 60, 60, 50, 70, 70, 70])
+            ad_table.setStyle(TableStyle([
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ]))
+            elements.append(ad_table)
+            elements.append(Spacer(1, 20))
+            
+            # Bank Details
+            bank_style = ParagraphStyle(
+                'BankStyle',
+                parent=styles['Normal'],
+                fontSize=10,
+                textColor=colors.black,
+                leftIndent=0
+            )
+            
+            bank_details = [
+                f"Bank Name: {self.bank_details['bank_name']}",
+                f"Bank A/c Name: {self.bank_details['account_name']}",
+                f"Bank A/c No: {self.bank_details['account_number']}",
+                f"Bank IFSC Code: {self.bank_details['ifsc_code']}",
+                f"Branch: {self.bank_details['branch']}"
+            ]
+            
+            for detail in bank_details:
+                elements.append(Paragraph(detail, bank_style))
+            
+            elements.append(Spacer(1, 12))
+            
+            # Grand Total
+            grand_total_style = ParagraphStyle(
+                'TotalStyle',
+                parent=styles['Normal'],
+                fontSize=12,
+                textColor=colors.black,
+                alignment=0,
+                spaceBefore=10
+            )
+            grand_total = Paragraph(f"<b>Grand Total Amount: ₹{float(invoice[33]):,.2f}</b>", grand_total_style)
+            elements.append(grand_total)
+            elements.append(Spacer(1, 20))
+            
+            # Terms and Conditions
+            terms_style = ParagraphStyle(
+                'TermsStyle',
+                parent=styles['Normal'],
+                fontSize=9,
+                textColor=colors.black,
+                leftIndent=0
+            )
+            
+            terms = [
+                "(1) Any complaint about the bill must be received within 10 days.",
+                "(2) Remit by A/c Cheque Favouring: CHHATTISGARH WATCH",
+                "(3) Bill not paid within 15 days will be liable to interest @ 1.5% P.A.",
+                "(4) Court proceedings will be subject to Raipur."
+            ]
+            
+            for term in terms:
+                elements.append(Paragraph(term, terms_style))
+            
+            doc.build(elements)
+            messagebox.showinfo("Success", f"Professional invoice saved as {filename}")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to create PDF: {str(e)}")
+    
+    def print_current_invoice(self):
+        """Print the current invoice being created/edited"""
+        if not self.bill_no.get().strip():
+            messagebox.showwarning("Warning", "Please save the invoice first before printing")
+            return
+            
+        # Calculate total to ensure all data is current
+        grand_total = self.calculate_total()
+        if grand_total == 0:
+            messagebox.showerror("Error", "Please calculate total first")
+            return
+        
+        # Create a temporary invoice object from current form data
+        temp_invoice = (
+            "TEMP",  # invoice_number
+            self.agency_name.get().strip(),
+            self.place.get().strip(),
+            self.client_name.get('1.0', tk.END).strip(),
+            self.client_gstin.get().strip(),
+            self.region.get(),
+            self.district.get(),
+            self.area.get(),
+            self.invoice_date.get().strip(),
+            self.bill_no.get().strip(),
+            self.ro_no.get().strip(),
+            self.ro_date.get().strip(),
+            self.hsn_code.get().strip(),
+            self.pub_date.get().strip(),
+            self.insertion.get().strip(),
+            self.color_type.get(),
+            self.page_no.get().strip(),
+            self.particulars.get().strip(),
+            self.ad_size_cm.get().strip(),
+            self.total_size.get().strip(),
+            float(self.rate.get()),
+            float(self.total_size.get()) * float(self.rate.get()) * int(self.insertion.get()),
+            float(self.page_premium_front.get() or 0),
+            float(self.page_premium_back.get() or 0),
+            float(self.color_charge.get() or 0),
+            float(self.deduction_amount.get() or 0),
+            2.5, 2.5, 0,  # GST rates
+            (float(self.total_size.get()) * float(self.rate.get()) * int(self.insertion.get()) * 2.5) / 100,
+            (float(self.total_size.get()) * float(self.rate.get()) * int(self.insertion.get()) * 2.5) / 100,
+            0,  # IGST
+            grand_total,
+            0, grand_total, "Unpaid", self.user[3], date.today().strftime("%Y-%m-%d")
+        )
+        
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            filetypes=[("PDF files", "*.pdf")],
+            title="Save Current Invoice As",
+            initialfile=f"Invoice_{self.bill_no.get()}.pdf"
+        )
+        
+        if filename:
+            self.create_pdf_invoice(temp_invoice, filename)
+    
+    def print_invoice(self):
+        """Print selected invoice from the list"""
+        selected = self.invoice_tree.selection()
+        if not selected:
+            messagebox.showwarning("Warning", "Please select an invoice to print")
+            return
+        
+        invoice_id = self.invoice_tree.item(selected[0])['values'][0]
+        self.cursor.execute("SELECT * FROM invoices WHERE id=?", (invoice_id,))
+        invoice = self.cursor.fetchone()
+        
+        if invoice:
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".pdf",
+                filetypes=[("PDF files", "*.pdf")],
+                title="Save Invoice As",
+                initialfile=f"Invoice_{invoice[10]}.pdf"
+            )
+            
+            if filename:
+                self.create_pdf_invoice(invoice, filename)
+                messagebox.showinfo("Success", f"Invoice saved as {filename}")
+
+    # Implemented methods for dashboard and reports
+    def create_client_tab(self):
+        """Create client management tab"""
+        main_frame = ttk.Frame(self.client_frame)
+        main_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        ttk.Label(main_frame, text="Client Management - Coming Soon", 
+                 font=('Arial', 16)).pack(pady=50)
+    
+    def create_ledger_tab(self):
+        """Create ledger tab"""
+        main_frame = ttk.Frame(self.ledger_frame)
+        main_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Ledger treeview
+        tree_frame = ttk.Frame(main_frame)
+        tree_frame.pack(fill='both', expand=True)
+        
+        columns = ("Date", "Voucher Type", "Voucher No", "Party Name", "Description", "Debit", "Credit", "Balance")
+        self.ledger_tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=20)
+        
+        for col in columns:
+            self.ledger_tree.heading(col, text=col)
+            self.ledger_tree.column(col, width=100)
+        
+        ledger_scrollbar = ttk.Scrollbar(tree_frame, orient='vertical', command=self.ledger_tree.yview)
+        self.ledger_tree.configure(yscrollcommand=ledger_scrollbar.set)
+        
+        self.ledger_tree.pack(side='left', fill='both', expand=True)
+        ledger_scrollbar.pack(side='right', fill='y')
+    
+    def create_balance_tab(self):
+        """Create balance sheet tab"""
+        main_frame = ttk.Frame(self.balance_frame)
+        main_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Balance sheet frame
+        balance_frame = ttk.LabelFrame(main_frame, text="Balance Sheet", padding=15)
+        balance_frame.pack(fill='both', expand=True)
+        
+        # Income section
+        income_frame = ttk.LabelFrame(balance_frame, text="Income", padding=10)
+        income_frame.pack(fill='x', pady=5)
+        
+        self.cursor.execute('''
+            SELECT COALESCE(SUM(grand_total), 0) FROM invoices 
+            WHERE strftime('%Y-%m', created_date) = ?
+        ''', (date.today().strftime("%Y-%m"),))
+        monthly_income = self.cursor.fetchone()[0]
+        
+        ttk.Label(income_frame, text=f"Monthly Income: ₹{monthly_income:,.2f}", 
+                 font=('Arial', 12)).pack(anchor='w')
+        
+        self.cursor.execute('''
+            SELECT COALESCE(SUM(grand_total), 0) FROM invoices
+        ''')
+        total_income = self.cursor.fetchone()[0]
+        
+        ttk.Label(income_frame, text=f"Total Income: ₹{total_income:,.2f}", 
+                 font=('Arial', 12)).pack(anchor='w')
+        
+        # Expenses section
+        expenses_frame = ttk.LabelFrame(balance_frame, text="Expenses", padding=10)
+        expenses_frame.pack(fill='x', pady=5)
+        
+        ttk.Label(expenses_frame, text="Expenses tracking - Coming Soon", 
+                 font=('Arial', 12)).pack(anchor='w')
+        
+        # Summary section
+        summary_frame = ttk.LabelFrame(balance_frame, text="Summary", padding=10)
+        summary_frame.pack(fill='x', pady=5)
+        
+        self.cursor.execute('''
+            SELECT COALESCE(SUM(balance_amount), 0) FROM invoices 
+            WHERE status = 'Unpaid'
+        ''')
+        outstanding = self.cursor.fetchone()[0]
+        
+        ttk.Label(summary_frame, text=f"Outstanding Amount: ₹{outstanding:,.2f}", 
+                 font=('Arial', 12, 'bold'), foreground='red').pack(anchor='w')
+        
+        net_balance = total_income - outstanding
+        ttk.Label(summary_frame, text=f"Net Balance: ₹{net_balance:,.2f}", 
+                 font=('Arial', 14, 'bold'), foreground='green').pack(anchor='w')
+    
+    def create_reports_tab(self):
+        """Create reports tab"""
+        main_frame = ttk.Frame(self.reports_frame)
+        main_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Reports options
+        reports_frame = ttk.LabelFrame(main_frame, text="Generate Reports", padding=15)
+        reports_frame.pack(fill='both', expand=True)
+        
+        ttk.Button(reports_frame, text="Monthly Report", 
+                  command=self.generate_monthly_report, width=20).pack(pady=10)
+        ttk.Button(reports_frame, text="Region-wise Report", 
+                  command=self.generate_region_report, width=20).pack(pady=10)
+        ttk.Button(reports_frame, text="Client-wise Report", 
+                  command=self.generate_client_report, width=20).pack(pady=10)
+        ttk.Button(reports_frame, text="Export All Data to Excel", 
+                  command=self.export_all_excel, width=20).pack(pady=10)
+    
+    def create_statement_tab(self):
+        """Create statement tab"""
+        main_frame = ttk.Frame(self.statement_frame)
+        main_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Statement frame
+        statement_frame = ttk.LabelFrame(main_frame, text="Account Statement", padding=15)
+        statement_frame.pack(fill='both', expand=True)
+        
+        # Client selection
+        client_frame = ttk.Frame(statement_frame)
+        client_frame.pack(fill='x', pady=10)
+        
+        ttk.Label(client_frame, text="Select Client:").pack(side='left', padx=5)
+        self.client_statement_combo = ttk.Combobox(client_frame, width=30)
+        self.client_statement_combo.pack(side='left', padx=5)
+        ttk.Button(client_frame, text="Generate Statement", 
+                  command=self.generate_client_statement).pack(side='left', padx=10)
+        
+        # Statement treeview
+        tree_frame = ttk.Frame(statement_frame)
+        tree_frame.pack(fill='both', expand=True)
+        
+        columns = ("Date", "Bill No", "Description", "Debit", "Credit", "Balance")
+        self.statement_tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=15)
+        
+        for col in columns:
+            self.statement_tree.heading(col, text=col)
+            self.statement_tree.column(col, width=120)
+        
+        statement_scrollbar = ttk.Scrollbar(tree_frame, orient='vertical', command=self.statement_tree.yview)
+        self.statement_tree.configure(yscrollcommand=statement_scrollbar.set)
+        
+        self.statement_tree.pack(side='left', fill='both', expand=True)
+        statement_scrollbar.pack(side='right', fill='y')
+    
+    def create_users_tab(self):
+        """Create user management tab (Admin only)"""
+        main_frame = ttk.Frame(self.users_frame)
+        main_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        ttk.Label(main_frame, text="User Management - Admin Access", 
+                 font=('Arial', 16)).pack(pady=50)
+    
+    def load_clients(self):
+        """Load clients for statement generation"""
+        try:
+            self.cursor.execute("SELECT DISTINCT agency_name FROM invoices ORDER BY agency_name")
+            clients = [row[0] for row in self.cursor.fetchall()]
+            self.client_statement_combo['values'] = clients
+        except Exception as e:
+            print(f"Error loading clients: {e}")
+    
+    def load_ledger(self):
+        """Load ledger data"""
+        try:
+            for item in self.ledger_tree.get_children():
+                self.ledger_tree.delete(item)
+            
+            self.cursor.execute('''
+                SELECT date, voucher_type, voucher_no, party_name, description, debit, credit, balance 
+                FROM ledger ORDER BY date DESC, id DESC
+            ''')
+            ledger_entries = self.cursor.fetchall()
+            
+            for entry in ledger_entries:
+                formatted_entry = list(entry)
+                formatted_entry[5] = f"₹{entry[5]:,.2f}" if entry[5] else ""
+                formatted_entry[6] = f"₹{entry[6]:,.2f}" if entry[6] else ""
+                formatted_entry[7] = f"₹{entry[7]:,.2f}"
+                self.ledger_tree.insert('', 'end', values=formatted_entry)
+                
+        except Exception as e:
+            print(f"Error loading ledger: {e}")
+    
+    def apply_filters(self, event=None):
+        """Apply filters to invoice list"""
+        try:
+            region_filter = self.region_filter.get()
+            district_filter = self.district_filter.get()
+            status_filter = self.status_filter.get()
+            
+            query = "SELECT id, bill_no, client_name, invoice_date, grand_total, status, region, district FROM invoices WHERE 1=1"
+            params = []
+            
+            if region_filter != "All":
+                query += " AND region = ?"
+                params.append(region_filter)
+            
+            if district_filter != "All":
+                query += " AND district = ?"
+                params.append(district_filter)
+            
+            if status_filter != "All":
+                query += " AND status = ?"
+                params.append(status_filter)
+            
+            query += " ORDER BY created_date DESC, id DESC"
+            
+            # Clear existing items
+            for item in self.invoice_tree.get_children():
+                self.invoice_tree.delete(item)
+            
+            self.cursor.execute(query, params)
+            invoices = self.cursor.fetchall()
+            
+            for invoice in invoices:
+                formatted_invoice = list(invoice)
+                formatted_invoice[4] = f"₹{invoice[4]:,.2f}"
+                self.invoice_tree.insert('', 'end', values=formatted_invoice)
+                
+        except Exception as e:
+            print(f"Error applying filters: {e}")
+    
+    def clear_filters(self):
+        """Clear all filters"""
+        self.region_filter.set("All")
+        self.district_filter.set("All")
+        self.status_filter.set("All")
+        self.load_invoices()
+    
+    def edit_invoice(self):
+        """Edit selected invoice"""
+        selected = self.invoice_tree.selection()
+        if not selected:
+            messagebox.showwarning("Warning", "Please select an invoice to edit")
+            return
+        
+        invoice_id = self.invoice_tree.item(selected[0])['values'][0]
+        self.cursor.execute("SELECT * FROM invoices WHERE id=?", (invoice_id,))
+        invoice = self.cursor.fetchone()
+        
+        if invoice:
+            # Populate form with invoice data
+            self.current_invoice_id = invoice_id
+            self.agency_name.delete(0, tk.END)
+            self.agency_name.insert(0, invoice[1])
+            self.place.delete(0, tk.END)
+            self.place.insert(0, invoice[2])
+            self.client_name.delete('1.0', tk.END)
+            self.client_name.insert('1.0', invoice[3])
+            self.client_gstin.delete(0, tk.END)
+            self.client_gstin.insert(0, invoice[4] or "")
+            self.region.set(invoice[6])
+            self.update_district_combo()
+            self.district.set(invoice[7])
+            self.update_area_combo()
+            self.area.set(invoice[8])
+            self.invoice_date.delete(0, tk.END)
+            self.invoice_date.insert(0, invoice[9])
+            self.bill_no.delete(0, tk.END)
+            self.bill_no.insert(0, invoice[10])
+            self.ro_no.delete(0, tk.END)
+            self.ro_no.insert(0, invoice[11] or "")
+            self.ro_date.delete(0, tk.END)
+            self.ro_date.insert(0, invoice[12] or "")
+            self.hsn_code.delete(0, tk.END)
+            self.hsn_code.insert(0, invoice[13] or "998363")
+            self.pub_date.delete(0, tk.END)
+            self.pub_date.insert(0, invoice[14])
+            self.insertion.delete(0, tk.END)
+            self.insertion.insert(0, invoice[15])
+            self.color_type.set(invoice[16])
+            self.page_no.delete(0, tk.END)
+            self.page_no.insert(0, invoice[17])
+            self.particulars.delete(0, tk.END)
+            self.particulars.insert(0, invoice[18])
+            self.ad_size_cm.delete(0, tk.END)
+            self.ad_size_cm.insert(0, invoice[19])
+            self.total_size.delete(0, tk.END)
+            self.total_size.insert(0, invoice[20])
+            self.rate.delete(0, tk.END)
+            self.rate.insert(0, str(invoice[21]))
+            self.page_premium_front.delete(0, tk.END)
+            self.page_premium_front.insert(0, str(invoice[23]))
+            self.page_premium_back.delete(0, tk.END)
+            self.page_premium_back.insert(0, str(invoice[24]))
+            self.color_charge.delete(0, tk.END)
+            self.color_charge.insert(0, str(invoice[25]))
+            self.deduction_amount.delete(0, tk.END)
+            self.deduction_amount.insert(0, str(invoice[26]))
+            
+            # Calculate and display amounts
+            self.calculate_total()
+            
+            messagebox.showinfo("Info", "Invoice loaded for editing. Make changes and click Save Invoice.")
+    
+    def delete_invoice(self):
+        """Delete selected invoice"""
+        selected = self.invoice_tree.selection()
+        if not selected:
+            messagebox.showwarning("Warning", "Please select an invoice to delete")
+            return
+        
+        invoice_id = self.invoice_tree.item(selected[0])['values'][0]
+        bill_no = self.invoice_tree.item(selected[0])['values'][1]
+        
+        if messagebox.askyesno("Confirm Delete", f"Are you sure you want to delete invoice {bill_no}?"):
+            try:
+                self.cursor.execute("DELETE FROM invoices WHERE id=?", (invoice_id,))
+                self.conn.commit()
+                messagebox.showinfo("Success", "Invoice deleted successfully!")
+                self.load_invoices()
+                self.update_dashboard()
+                self.load_ledger()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to delete invoice: {str(e)}")
+    
+    def export_invoice_pdf(self):
+        """Export selected invoice as PDF"""
+        self.print_invoice()
+    
+    def mark_paid(self):
+        """Mark selected invoice as paid"""
+        selected = self.invoice_tree.selection()
+        if not selected:
+            messagebox.showwarning("Warning", "Please select an invoice to mark as paid")
+            return
+        
+        invoice_id = self.invoice_tree.item(selected[0])['values'][0]
+        bill_no = self.invoice_tree.item(selected[0])['values'][1]
+        amount = float(self.invoice_tree.item(selected[0])['values'][4].replace('₹', '').replace(',', ''))
+        
+        try:
+            self.cursor.execute('''
+                UPDATE invoices SET status = 'Paid', paid_amount = ?, balance_amount = 0 
+                WHERE id = ?
+            ''', (amount, invoice_id))
+            self.conn.commit()
+            
+            # Add ledger entry for payment
+            self.cursor.execute("SELECT invoice_number, agency_name FROM invoices WHERE id=?", (invoice_id,))
+            invoice_data = self.cursor.fetchone()
+            
+            if invoice_data:
+                self.cursor.execute('''
+                    INSERT INTO ledger (date, voucher_type, voucher_no, party_name, description, debit, credit, balance)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (date.today().strftime("%Y-%m-%d"), "Payment", invoice_data[0], 
+                      invoice_data[1], "Payment Received", 0, amount, 0))
+                self.conn.commit()
+            
+            messagebox.showinfo("Success", f"Invoice {bill_no} marked as paid!")
+            self.load_invoices()
+            self.update_dashboard()
+            self.load_ledger()
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to mark invoice as paid: {str(e)}")
+    
+    def export_excel(self):
+        """Export invoices to Excel"""
+        try:
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".xlsx",
+                filetypes=[("Excel files", "*.xlsx")],
+                title="Export Invoices to Excel",
+                initialfile=f"Invoices_Export_{date.today().strftime('%Y%m%d')}.xlsx"
+            )
+            
+            if filename:
+                self.cursor.execute('''
+                    SELECT invoice_number, agency_name, place, client_name, client_gstin, 
+                           region, district, area, invoice_date, bill_no, ro_no, ro_date,
+                           hsn_code, pub_date, insertion, color_type, page_no, particulars,
+                           ad_size, total_size, rate, amount, page_premium_front, page_premium_back,
+                           color_charge, deduction_amount, cgst_amount, sgst_amount, grand_total,
+                           paid_amount, balance_amount, status
+                    FROM invoices
+                    ORDER BY created_date DESC
+                ''')
+                invoices = self.cursor.fetchall()
+                
+                columns = [
+                    'Invoice Number', 'Agency Name', 'Place', 'Client Name', 'GSTIN',
+                    'Region', 'District', 'Area', 'Invoice Date', 'Bill No', 'RO No', 'RO Date',
+                    'HSN Code', 'Publication Date', 'Insertion', 'Color Type', 'Page No', 'Particulars',
+                    'Ad Size', 'Total Size', 'Rate', 'Amount', 'Page Premium Front', 'Page Premium Back',
+                    'Color Charge', 'Deduction Amount', 'CGST Amount', 'SGST Amount', 'Grand Total',
+                    'Paid Amount', 'Balance Amount', 'Status'
+                ]
+                
+                df = pd.DataFrame(invoices, columns=columns)
+                df.to_excel(filename, index=False)
+                messagebox.showinfo("Success", f"Invoices exported to {filename}")
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to export to Excel: {str(e)}")
+    
+    # Report generation methods
+    def generate_monthly_report(self):
+        """Generate monthly report"""
+        try:
+            self.cursor.execute('''
+                SELECT strftime('%Y-%m', created_date) as month, 
+                       COUNT(*) as invoice_count,
+                       SUM(grand_total) as total_amount,
+                       SUM(paid_amount) as paid_amount,
+                       SUM(balance_amount) as balance_amount
+                FROM invoices
+                GROUP BY strftime('%Y-%m', created_date)
+                ORDER BY month DESC
+            ''')
+            monthly_data = self.cursor.fetchall()
+            
+            if not monthly_data:
+                messagebox.showinfo("Info", "No data available for monthly report")
+                return
+            
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".xlsx",
+                filetypes=[("Excel files", "*.xlsx")],
+                title="Save Monthly Report As",
+                initialfile=f"Monthly_Report_{date.today().strftime('%Y%m%d')}.xlsx"
+            )
+            
+            if filename:
+                df = pd.DataFrame(monthly_data, columns=['Month', 'Invoice Count', 'Total Amount', 'Paid Amount', 'Balance Amount'])
+                df.to_excel(filename, index=False)
+                messagebox.showinfo("Success", f"Monthly report saved as {filename}")
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to generate monthly report: {str(e)}")
+    
+    def generate_region_report(self):
+        """Generate region-wise report"""
+        try:
+            self.cursor.execute('''
+                SELECT region, 
+                       COUNT(*) as invoice_count,
+                       SUM(grand_total) as total_amount,
+                       SUM(paid_amount) as paid_amount,
+                       SUM(balance_amount) as balance_amount
+                FROM invoices
+                GROUP BY region
+                ORDER BY total_amount DESC
+            ''')
+            region_data = self.cursor.fetchall()
+            
+            if not region_data:
+                messagebox.showinfo("Info", "No data available for region report")
+                return
+            
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".xlsx",
+                filetypes=[("Excel files", "*.xlsx")],
+                title="Save Region Report As",
+                initialfile=f"Region_Report_{date.today().strftime('%Y%m%d')}.xlsx"
+            )
+            
+            if filename:
+                df = pd.DataFrame(region_data, columns=['Region', 'Invoice Count', 'Total Amount', 'Paid Amount', 'Balance Amount'])
+                df.to_excel(filename, index=False)
+                messagebox.showinfo("Success", f"Region report saved as {filename}")
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to generate region report: {str(e)}")
+    
+    def generate_client_report(self):
+        """Generate client-wise report"""
+        try:
+            self.cursor.execute('''
+                SELECT agency_name, 
+                       COUNT(*) as invoice_count,
+                       SUM(grand_total) as total_amount,
+                       SUM(paid_amount) as paid_amount,
+                       SUM(balance_amount) as balance_amount
+                FROM invoices
+                GROUP BY agency_name
+                ORDER BY total_amount DESC
+            ''')
+            client_data = self.cursor.fetchall()
+            
+            if not client_data:
+                messagebox.showinfo("Info", "No data available for client report")
+                return
+            
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".xlsx",
+                filetypes=[("Excel files", "*.xlsx")],
+                title="Save Client Report As",
+                initialfile=f"Client_Report_{date.today().strftime('%Y%m%d')}.xlsx"
+            )
+            
+            if filename:
+                df = pd.DataFrame(client_data, columns=['Client', 'Invoice Count', 'Total Amount', 'Paid Amount', 'Balance Amount'])
+                df.to_excel(filename, index=False)
+                messagebox.showinfo("Success", f"Client report saved as {filename}")
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to generate client report: {str(e)}")
+    
+    def export_all_excel(self):
+        """Export all data to Excel"""
+        try:
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".xlsx",
+                filetypes=[("Excel files", "*.xlsx")],
+                title="Export All Data to Excel",
+                initialfile=f"Complete_Data_Export_{date.today().strftime('%Y%m%d')}.xlsx"
+            )
+            
+            if filename:
+                with pd.ExcelWriter(filename) as writer:
+                    # Invoices sheet
+                    self.cursor.execute('''
+                        SELECT * FROM invoices ORDER BY created_date DESC
+                    ''')
+                    invoices = self.cursor.fetchall()
+                    invoice_columns = [description[0] for description in self.cursor.description]
+                    df_invoices = pd.DataFrame(invoices, columns=invoice_columns)
+                    df_invoices.to_excel(writer, sheet_name='Invoices', index=False)
+                    
+                    # Ledger sheet
+                    self.cursor.execute('SELECT * FROM ledger ORDER BY date DESC')
+                    ledger = self.cursor.fetchall()
+                    ledger_columns = [description[0] for description in self.cursor.description]
+                    df_ledger = pd.DataFrame(ledger, columns=ledger_columns)
+                    df_ledger.to_excel(writer, sheet_name='Ledger', index=False)
+                    
+                    # Summary sheet
+                    summary_data = {
+                        'Metric': ['Total Invoices', 'Total Revenue', 'Outstanding Amount', 'Paid Amount'],
+                        'Value': [
+                            len(invoices),
+                            df_invoices['grand_total'].sum(),
+                            df_invoices['balance_amount'].sum(),
+                            df_invoices['paid_amount'].sum()
+                        ]
+                    }
+                    df_summary = pd.DataFrame(summary_data)
+                    df_summary.to_excel(writer, sheet_name='Summary', index=False)
+                
+                messagebox.showinfo("Success", f"All data exported to {filename}")
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to export all data: {str(e)}")
+    
+    def generate_client_statement(self):
+        """Generate client statement"""
+        client_name = self.client_statement_combo.get()
+        if not client_name:
+            messagebox.showwarning("Warning", "Please select a client")
+            return
+        
+        try:
+            # Clear existing items
+            for item in self.statement_tree.get_children():
+                self.statement_tree.delete(item)
+            
+            # Get client transactions
+            self.cursor.execute('''
+                SELECT invoice_date, bill_no, 'Invoice' as description, grand_total, 0, balance_amount
+                FROM invoices 
+                WHERE agency_name = ?
+                UNION ALL
+                SELECT date, voucher_no, description, 0, credit, balance
+                FROM ledger 
+                WHERE party_name = ? AND voucher_type = 'Payment'
+                ORDER BY date DESC
+            ''', (client_name, client_name))
+            
+            transactions = self.cursor.fetchall()
+            
+            if not transactions:
+                messagebox.showinfo("Info", f"No transactions found for {client_name}")
+                return
+            
+            for transaction in transactions:
+                formatted_transaction = list(transaction)
+                formatted_transaction[3] = f"₹{transaction[3]:,.2f}" if transaction[3] > 0 else ""
+                formatted_transaction[4] = f"₹{transaction[4]:,.2f}" if transaction[4] > 0 else ""
+                formatted_transaction[5] = f"₹{transaction[5]:,.2f}"
+                self.statement_tree.insert('', 'end', values=formatted_transaction)
+                
+            messagebox.showinfo("Success", f"Statement generated for {client_name}")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to generate statement: {str(e)}")
+
+# Modified main execution - Directly start with login
+if __name__ == "__main__":
+    root = tk.Tk()
+    login_app = LoginWindow(root)
+    root.mainloop()

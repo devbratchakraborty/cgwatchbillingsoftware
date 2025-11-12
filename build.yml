@@ -1,0 +1,34 @@
+name: Build EXE
+
+on:
+  push:
+    branches: [ main ]
+  release:
+    types: [created]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - uses: actions/checkout@v2
+    
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: '3.9'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pandas reportlab Pillow openpyxl pyinstaller
+    
+    - name: Build EXE
+      run: |
+        pyinstaller --onefile --windowed --name "ChhattisgarhWatchBilling" main.py
+    
+    - name: Upload EXE
+      uses: actions/upload-artifact@v2
+      with:
+        name: ChhattisgarhWatchBilling
+        path: dist/ChhattisgarhWatchBilling.exe
